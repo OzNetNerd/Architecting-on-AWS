@@ -1,0 +1,253 @@
+Description:  "OzNetNerd.com: Architecting on AWS - EC2 Website with an ALB"
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: "OzNetNerd Demo"
+
+  AdminIp:
+    Type: String
+    Default: 0.0.0.0/0
+
+  InstanceType:
+    Type: String
+    Default: t3a.medium
+
+  KeyName:
+    Type: String
+    Description: "AWS EC2 key name"
+    Default: ""
+
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
+  VpcCidr:
+    Description: IP range for the VPC
+    Type: String
+    Default: 10.0.0.0/16
+
+  PublicSubnetACidr:
+    Description: "Public subnet A IP range"
+    Type: String
+    Default: 10.0.100.0/24
+
+  PublicSubnetBCidr:
+    Description: "Public subnet B IP range"
+    Type: String
+    Default: 10.0.101.0/24
+
+Conditions:
+  HasKeyName: !Not [ !Equals [ !Ref KeyName, "" ]]
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value: VPC
+      - Key: EnvironmentName
+        Value: !Ref EnvironmentName
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value: IGW
+      - Key: EnvironmentName
+        Value: !Ref EnvironmentName
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref Vpc
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Ref PublicSubnetACidr
+      MapPublicIpOnLaunch: true
+      Tags:
+      - Key: Name
+        Value: "Public Subnet A"
+      - Key: EnvironmentName
+        Value: !Ref EnvironmentName
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      CidrBlock: !Ref PublicSubnetBCidr
+      MapPublicIpOnLaunch: true
+      Tags:
+      - Key: Name
+        Value: "Public Subnet B"
+      - Key: EnvironmentName
+        Value: !Ref EnvironmentName
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+      - Key: Name
+        Value: "Public route table"
+      - Key: EnvironmentName
+        Value: !Ref EnvironmentName
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetA
+
+  PublicSubneBtRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetB
+
+  Ec2WebHostA:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !If [HasKeyName, !Ref KeyName, !Ref "AWS::NoValue"]
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnetA
+      SecurityGroupIds:
+        - !Ref Ec2WebHostSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          yum install python3 -y
+          wget https://raw.githubusercontent.com/OzNetNerd/Architecting-on-AWS/main/EC2_Website_ALB/website.py
+          wget https://raw.githubusercontent.com/OzNetNerd/Architecting-on-AWS/main/EC2_Website_ALB/requirements.txt
+          pip3 install -r requirements.txt
+          python3 website.py
+      Tags:
+      - Key: Name
+        Value: "EC2 Website A"
+      - Key: EnvironmentName
+        Value: !Ref EnvironmentName
+
+  Ec2WebHostB:
+    Type: AWS::EC2::Instance
+    Properties:
+      KeyName: !If [HasKeyName, !Ref KeyName, !Ref "AWS::NoValue"]
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnetB
+      SecurityGroupIds:
+        - !Ref Ec2WebHostSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          yum install python3 -y
+          wget https://raw.githubusercontent.com/OzNetNerd/Architecting-on-AWS/main/EC2_Website_ALB/website.py
+          wget https://raw.githubusercontent.com/OzNetNerd/Architecting-on-AWS/main/EC2_Website_ALB/requirements.txt
+          pip3 install -r requirements.txt
+          python3 website.py
+      Tags:
+      - Key: Name
+        Value: "EC2 Website B"
+      - Key: EnvironmentName
+        Value: !Ref EnvironmentName
+
+  Ec2WebHostSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "EC2 website security group"
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+      - Description: Allow inbound web traffic
+        FromPort: 5000
+        ToPort: 5000
+        IpProtocol: tcp
+        CidrIp: !Ref AdminIp
+      - !If [HasKeyName, {
+        Description: Allow SSH access,
+        FromPort: 22,
+        ToPort: 22,
+        IpProtocol: tcp,
+        CidrIp: !Ref AdminIp },
+        !Ref "AWS::NoValue" ]
+
+  Ec2WebHostAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: FileUploadAlb
+      Scheme: internet-facing
+      SecurityGroups:
+      - !Ref Ec2WebHostSecurityGroup
+      Subnets:
+      - !Ref PublicSubnetA
+      - !Ref PublicSubnetB
+
+  Ec2WebHostAlbTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckPort: 5000
+      Matcher:
+        HttpCode: 200
+      Name: Ec2WebHostAlbTargetGroup
+      Port: 5000
+      Protocol: HTTP
+      VpcId: !Ref Vpc
+      Targets:
+        - Id: !Ref Ec2WebHostA
+          Port: 5000
+        - Id: !Ref Ec2WebHostB
+          Port: 5000
+
+  Ec2WebHostAlbListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref Ec2WebHostAlbTargetGroup
+      LoadBalancerArn: !Ref Ec2WebHostAlb
+      Port: 5000
+      Protocol: HTTP
+
+  Ec2WebHostAlbListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+      - Type: forward
+        TargetGroupArn: !Ref Ec2WebHostAlbTargetGroup
+      Conditions:
+      - Field: path-pattern
+        Values:
+        - "/*"
+      ListenerArn: !Ref Ec2WebHostAlbListener
+      Priority: 1
+
+Outputs:
+  WebAddress:
+    Description: "Web Address"
+    Value: !Sub "http://${Ec2WebHostAlb.DNSName}:5000"
+
+  Ec2WebHostA:
+    Description: "Web Address A"
+    Value: !Sub "http://${Ec2WebHostA.PublicIp}:5000"
+
+  Ec2WebHostB:
+    Description: "Web Address B"
+    Value: !Sub "http://${Ec2WebHostB.PublicIp}:5000"
